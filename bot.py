@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 import requests
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 import shutil
 
@@ -31,6 +31,8 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("
 DEFAULT_COOLDOWN = int(os.getenv("COOLDOWN", 10))
 DEFAULT_AUTO_DELETE = int(os.getenv("AUTO_DELETE", 300))
 MAX_DOWNLOAD_MB = int(os.getenv("MAX_DOWNLOAD_MB", 1024))   # 1 GB default
+# Direct send limit (safe margin below Telegram's 50 MB limit)
+DIRECT_LIMIT_MB = 45
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -96,7 +98,7 @@ async def get_auto_delete() -> int:
 # ===== USER HELPERS =====
 async def update_user(user: dict):
     user_id = user["id"]
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute('''
             INSERT INTO users (user_id, username, first_name, last_name, joined_at, last_activity, request_count)
@@ -121,7 +123,7 @@ async def log_request(user_id: int, link: str, success: bool, error: str = None)
         await db.execute('''
             INSERT INTO requests (user_id, timestamp, link, success, error)
             VALUES (?, ?, ?, ?, ?)
-        ''', (user_id, datetime.utcnow().isoformat(), link, 1 if success else 0, error))
+        ''', (user_id, datetime.now(timezone.utc).isoformat(), link, 1 if success else 0, error))
         await db.commit()
 
 # ===== SESSION HELPERS =====
@@ -171,8 +173,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "This bot uses a user account to fetch messages from public channels.\n"
         "First, use /login to connect your Telegram account.\n\n"
         f"📦 **File limits:**\n"
-        f"- ≤50 MB: sent directly\n"
-        f"- 50 MB – {MAX_DOWNLOAD_MB} MB: uploaded to cloud (temporary link)\n"
+        f"- ≤{DIRECT_LIMIT_MB} MB: sent directly\n"
+        f"- {DIRECT_LIMIT_MB} MB – {MAX_DOWNLOAD_MB} MB: uploaded to cloud (temporary link)\n"
         f"- >{MAX_DOWNLOAD_MB} MB: rejected\n\n"
         "ℹ️ Use /help for full guide.",
         parse_mode="Markdown"
@@ -189,8 +191,8 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"⚠️ **Limits:**\n"
         f"- Cooldown: {cooldown} seconds between requests\n"
         "- Contact: @GamingHommie if you want personal bot.\n"
-        f"- File size: ≤50 MB → sent via bot\n"
-        f"- 50 MB – {MAX_DOWNLOAD_MB} MB → uploaded to cloud\n"
+        f"- File size: ≤{DIRECT_LIMIT_MB} MB → sent via bot\n"
+        f"- {DIRECT_LIMIT_MB} MB – {MAX_DOWNLOAD_MB} MB → uploaded to cloud\n"
         f"- >{MAX_DOWNLOAD_MB} MB → rejected\n\n"
         "📌 **Commands:**\n"
         "/start /help /myinfo /login /logout /cancel\n\n"
@@ -324,7 +326,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             banned_users = (await cursor.fetchone())[0]
         async with db.execute('SELECT COUNT(*) FROM requests') as cursor:
             total_requests = (await cursor.fetchone())[0]
-        today = datetime.utcnow().date().isoformat()
+        today = datetime.now(timezone.utc).date().isoformat()
         async with db.execute('SELECT COUNT(*) FROM requests WHERE date(timestamp) = ?', (today,)) as cursor:
             today_requests = (await cursor.fetchone())[0]
     cooldown = await get_cooldown()
@@ -541,10 +543,10 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await log_request(user_id, text, False, str(e))
         return
 
-    # Send a "Processing" message and store its ID for later updates
+    # Send a "Processing" message
     progress_msg = await update.message.reply_text("📥 Starting...")
 
-    # Spawn background task for the actual download and send
+    # Spawn background task
     asyncio.create_task(process_message(
         update, context, user_id, text, client, entity, msg_id, progress_msg
     ))
@@ -582,8 +584,9 @@ async def process_message(
                     )
                     await log_request(user_id, link, False, f"File too large: {size_mb} MB")
                     return
-                # Use a fixed 50 MB threshold for cloud upload
-                elif size_mb > 50:
+
+                # Use safe threshold: files larger than DIRECT_LIMIT_MB go to cloud
+                if size_mb > DIRECT_LIMIT_MB:
                     # Check disk space
                     total, used, free = shutil.disk_usage("/")
                     if free < file_size * 2:
@@ -639,7 +642,7 @@ async def process_message(
                     # ---- end anonfiles upload ----
 
                 else:
-                    # Normal download and send via bot (≤50 MB)
+                    # Direct send via Telegram (≤ DIRECT_LIMIT_MB)
                     await progress_msg.edit_text(f"📥 Downloading {size_mb:.1f} MB file...")
                     last_percent = -1
                     async def download_progress(current, total):
@@ -651,23 +654,55 @@ async def process_message(
                                 await progress_msg.edit_text(f"📥 Downloading... {percent}%")
                     file_path = await client.download_media(message, progress_callback=download_progress)
                     await progress_msg.edit_text("📤 Uploading to Telegram...")
-                    with open(file_path, "rb") as f:
-                        if message.audio:
-                            sent = await update.message.reply_audio(f, caption=message.text if message.text else None)
-                        elif message.video:
-                            sent = await update.message.reply_video(f, caption=message.text if message.text else None)
-                        elif message.photo:
-                            sent = await update.message.reply_photo(f, caption=message.text if message.text else None)
-                        else:
-                            sent = await update.message.reply_document(f, caption=message.text if message.text else None)
-                    asyncio.create_task(delete_file_after(file_path, 60))
-                    auto_del = await get_auto_delete()
-                    asyncio.create_task(auto_delete(context, sent.chat_id, sent.message_id))
-                    await progress_msg.delete()
-                    await log_request(user_id, link, True)
+                    try:
+                        with open(file_path, "rb") as f:
+                            if message.audio:
+                                sent = await update.message.reply_audio(f, caption=message.text if message.text else None)
+                            elif message.video:
+                                sent = await update.message.reply_video(f, caption=message.text if message.text else None)
+                            elif message.photo:
+                                sent = await update.message.reply_photo(f, caption=message.text if message.text else None)
+                            else:
+                                sent = await update.message.reply_document(f, caption=message.text if message.text else None)
+                        asyncio.create_task(delete_file_after(file_path, 60))
+                        auto_del = await get_auto_delete()
+                        asyncio.create_task(auto_delete(context, sent.chat_id, sent.message_id))
+                        await progress_msg.delete()
+                        await log_request(user_id, link, True)
+                    except Exception as e:
+                        # If direct send fails (e.g., timeout), fallback to cloud upload
+                        logger.warning(f"Direct send failed: {e}. Falling back to cloud upload.")
+                        await progress_msg.edit_text("Direct send failed, retrying with cloud upload...")
+                        # Re‑upload the same file to cloud
+                        try:
+                            with open(file_path, 'rb') as f:
+                                response = requests.post(
+                                    'https://api.anonfiles.com/upload',
+                                    files={'file': f},
+                                    timeout=300
+                                )
+                            if response.status_code == 200:
+                                data = response.json()
+                                if data.get('status', False):
+                                    download_link = data['data']['file']['url']['full']
+                                    await progress_msg.delete()
+                                    sent = await update.message.reply_text(
+                                        f"✅ File uploaded to cloud (fallback):\n{download_link}\n\n"
+                                        "⚠️ Note: The file will be deleted after 7 days of inactivity."
+                                    )
+                                    await log_request(user_id, link, True)
+                                    asyncio.create_task(delete_file_after(file_path, 60))
+                                    auto_del = await get_auto_delete()
+                                    asyncio.create_task(auto_delete(context, sent.chat_id, sent.message_id))
+                                    return
+                            raise Exception("Cloud upload also failed")
+                        except Exception as cloud_e:
+                            await progress_msg.edit_text(f"❌ Both direct and cloud upload failed: {cloud_e}")
+                            await log_request(user_id, link, False, str(cloud_e))
+                            asyncio.create_task(delete_file_after(file_path, 60))
                     return
             else:
-                # No file size info – download and send normally
+                # No file size info – download and send normally (assume small)
                 file_path = await client.download_media(message)
                 await progress_msg.edit_text("📤 Uploading...")
                 with open(file_path, "rb") as f:
