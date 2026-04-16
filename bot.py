@@ -30,8 +30,7 @@ API_HASH = os.getenv("API_HASH")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 DEFAULT_COOLDOWN = int(os.getenv("COOLDOWN", 10))
 DEFAULT_AUTO_DELETE = int(os.getenv("AUTO_DELETE", 300))
-MAX_DOWNLOAD_MB = int(os.getenv("MAX_DOWNLOAD_MB", 1024))   # 1 GB default
-# Direct send limit (safe margin below Telegram's 50 MB limit)
+MAX_DOWNLOAD_MB = int(os.getenv("MAX_DOWNLOAD_MB", 1024))
 DIRECT_LIMIT_MB = 45
 
 logging.basicConfig(level=logging.INFO)
@@ -604,20 +603,37 @@ async def process_message(
                                 last_percent = percent
                                 await progress_msg.edit_text(f"📥 Downloading... {percent}%")
                     file_path = await client.download_media(message, progress_callback=download_progress)
-                    await progress_msg.edit_text("📤 Uploading to cloud (anonfiles.com)...")
+                    await progress_msg.edit_text("📤 Uploading to cloud (gofile.io)...")
 
-                    # ---- Upload to anonfiles.com ----
+                    # ---- Upload to gofile.io (RELIABLE FIX) ----
                     try:
+                        # Step 1: Get an upload server
+                        server_resp = requests.get('https://api.gofile.io/servers', timeout=10)
+                        if server_resp.status_code != 200:
+                            raise Exception("Failed to get upload server")
+                        server_data = server_resp.json()
+                        if server_data.get('status') != 'ok':
+                            raise Exception(f"Server API error: {server_data.get('error', 'Unknown')}")
+                        # Pick the first available server
+                        server = server_data['data']['servers'][0]['name']
+                        upload_url = f'https://{server}.gofile.io/uploadFile'
+
+                        # Step 2: Upload the file
                         with open(file_path, 'rb') as f:
                             response = requests.post(
-                                'https://api.anonfiles.com/upload',
+                                upload_url,
                                 files={'file': f},
-                                timeout=300
+                                timeout=300  # 5 minutes timeout
                             )
+
                         if response.status_code == 200:
                             data = response.json()
-                            if data.get('status', False):
-                                download_link = data['data']['file']['url']['full']
+                            if data.get('status') == 'ok':
+                                # Get the download link
+                                download_link = data['data']['downloadPage']
+                                direct_link = data['data'].get('directLink')
+                                if direct_link:
+                                    download_link = direct_link
                                 await progress_msg.delete()
                                 sent = await update.message.reply_text(
                                     f"✅ File uploaded to cloud:\n{download_link}\n\n"
@@ -629,7 +645,7 @@ async def process_message(
                                 asyncio.create_task(auto_delete(context, sent.chat_id, sent.message_id))
                                 return
                             else:
-                                error_msg = data.get('error', {}).get('message', 'Unknown error')
+                                error_msg = data.get('error', 'Unknown error')
                                 await progress_msg.edit_text(f"❌ Upload failed: {error_msg}")
                         else:
                             await progress_msg.edit_text(f"❌ Upload failed: HTTP {response.status_code}")
@@ -639,7 +655,7 @@ async def process_message(
                         await log_request(user_id, link, False, f"Upload failed: {str(e)}")
                         asyncio.create_task(delete_file_after(file_path, 60))
                         return
-                    # ---- end anonfiles upload ----
+                    # ---- end gofile.io upload ----
 
                 else:
                     # Direct send via Telegram (≤ DIRECT_LIMIT_MB)
@@ -676,15 +692,29 @@ async def process_message(
                         # Re‑upload the same file to cloud
                         try:
                             with open(file_path, 'rb') as f:
+                                # Step 1: Get an upload server
+                                server_resp = requests.get('https://api.gofile.io/servers', timeout=10)
+                                if server_resp.status_code != 200:
+                                    raise Exception("Failed to get upload server")
+                                server_data = server_resp.json()
+                                if server_data.get('status') != 'ok':
+                                    raise Exception(f"Server API error: {server_data.get('error', 'Unknown')}")
+                                server = server_data['data']['servers'][0]['name']
+                                upload_url = f'https://{server}.gofile.io/uploadFile'
+
+                                # Step 2: Upload the file
                                 response = requests.post(
-                                    'https://api.anonfiles.com/upload',
+                                    upload_url,
                                     files={'file': f},
                                     timeout=300
                                 )
                             if response.status_code == 200:
                                 data = response.json()
-                                if data.get('status', False):
-                                    download_link = data['data']['file']['url']['full']
+                                if data.get('status') == 'ok':
+                                    download_link = data['data']['downloadPage']
+                                    direct_link = data['data'].get('directLink')
+                                    if direct_link:
+                                        download_link = direct_link
                                     await progress_msg.delete()
                                     sent = await update.message.reply_text(
                                         f"✅ File uploaded to cloud (fallback):\n{download_link}\n\n"
