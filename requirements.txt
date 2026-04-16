@@ -1,0 +1,4 @@
+python-telegram-bot[webhooks]==20.7
+telethon==1.37.0
+aiosqlite==0.19.0
+requests==2.31.0
