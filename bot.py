@@ -235,7 +235,8 @@ async def process_message(
                                 await progress_msg.edit_text(f"📥 Downloading... {percent}%")
                     file_path = await client.download_media(message, progress_callback=dl_progress)
                     await progress_msg.edit_text("📤 Uploading to cloud (gofile.io)...")
-                                        try:
+
+                    try:
                         resp = requests.get('https://api.gofile.io/servers', timeout=10)
                         if resp.status_code != 200:
                             raise Exception("Failed to get upload server")
@@ -590,7 +591,8 @@ async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Auto‑delete set to {sec}s.")
     except:
         await update.message.reply_text("Invalid number.")
-        # ===== Inline Cancel Button Handler =====
+
+# ===== Inline Cancel Button Handler =====
 async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
