@@ -40,13 +40,27 @@ MAX_CONCURRENT = 2
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ===== MongoDB =====
-mongo = AsyncIOMotorClient(MONGO_URI)
-db = mongo["telegram_bot"]
-users_col = db["users"]
-sessions_col = db["sessions"]
-requests_col = db["requests"]
-config_col = db["config"]
+# ===== MongoDB (with error handling) =====
+mongo = None
+db = None
+users_col = None
+sessions_col = None
+requests_col = None
+config_col = None
+
+if MONGO_URI:
+    try:
+        mongo = AsyncIOMotorClient(MONGO_URI)
+        db = mongo["telegram_bot"]
+        users_col = db["users"]
+        sessions_col = db["sessions"]
+        requests_col = db["requests"]
+        config_col = db["config"]
+        logger.info("MongoDB connected successfully")
+    except Exception as e:
+        logger.error(f"MongoDB connection failed: {e}. Bot will run without database (users cannot login).")
+else:
+    logger.warning("MONGO_URI not set. Bot will run without database.")
 
 # ===== In‑memory structures =====
 task_queue = asyncio.Queue()
@@ -55,12 +69,16 @@ queue_order: List[int] = []
 user_position: Dict[int, int] = {}
 semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
-# ===== Helper functions =====
+# ===== Helper functions (with fallback if MongoDB missing) =====
 async def get_config(key: str, default: int) -> int:
+    if not config_col:
+        return default
     doc = await config_col.find_one({"_id": key})
     return doc["value"] if doc else default
 
 async def set_config(key: str, value: int):
+    if not config_col:
+        return
     await config_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
 async def get_cooldown() -> int:
@@ -70,6 +88,8 @@ async def get_auto_delete() -> int:
     return await get_config("auto_delete", DEFAULT_AUTO_DELETE)
 
 async def update_user(user: dict):
+    if not users_col:
+        return
     user_id = user["id"]
     now = datetime.now(timezone.utc)
     await users_col.update_one(
@@ -88,10 +108,14 @@ async def update_user(user: dict):
     )
 
 async def is_banned(user_id: int) -> bool:
+    if not users_col:
+        return False
     user = await users_col.find_one({"user_id": user_id})
     return user.get("is_banned", False) if user else False
 
 async def log_request(user_id: int, link: str, success: bool, error: str = None):
+    if not requests_col:
+        return
     await requests_col.insert_one({
         "user_id": user_id,
         "timestamp": datetime.now(timezone.utc),
@@ -101,10 +125,14 @@ async def log_request(user_id: int, link: str, success: bool, error: str = None)
     })
 
 async def get_user_session(user_id: int) -> Optional[str]:
+    if not sessions_col:
+        return None
     doc = await sessions_col.find_one({"user_id": user_id})
     return doc["session_string"] if doc else None
 
 async def save_user_session(user_id: int, session_string: str):
+    if not sessions_col:
+        return
     await sessions_col.update_one(
         {"user_id": user_id},
         {"$set": {"session_string": session_string}},
@@ -112,6 +140,8 @@ async def save_user_session(user_id: int, session_string: str):
     )
 
 async def delete_user_session(user_id: int):
+    if not sessions_col:
+        return
     await sessions_col.delete_one({"user_id": user_id})
 
 # ===== Telethon client cache =====
@@ -363,6 +393,9 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def myinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available. Cannot fetch info.")
+        return
     user = await users_col.find_one({"user_id": user_id})
     if not user:
         await update.message.reply_text("No data found. Send a link first.")
@@ -461,6 +494,9 @@ def admin_only(func):
 
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     total_users = await users_col.count_documents({})
     banned = await users_col.count_documents({"is_banned": True})
     total_req = await requests_col.count_documents({})
@@ -478,6 +514,9 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     page = 0
     if context.args:
         try:
@@ -497,6 +536,9 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if not context.args:
         await update.message.reply_text("Usage: /user <id>")
         return
@@ -514,6 +556,9 @@ async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if not context.args:
         await update.message.reply_text("Usage: /ban <id>")
         return
@@ -527,6 +572,9 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if not context.args:
         await update.message.reply_text("Usage: /unban <id>")
         return
@@ -540,6 +588,9 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not users_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if update.message.reply_to_message:
         msg = update.message.reply_to_message
         await update.message.reply_text("📢 Broadcasting...")
@@ -568,6 +619,9 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def set_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not config_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if not context.args:
         await update.message.reply_text("Usage: /setcooldown <seconds>")
         return
@@ -581,6 +635,9 @@ async def set_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not config_col:
+        await update.message.reply_text("ℹ️ Database not available.")
+        return
     if not context.args:
         await update.message.reply_text("Usage: /setautodelete <seconds>")
         return
