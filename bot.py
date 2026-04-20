@@ -35,7 +35,6 @@ MAX_DOWNLOAD_MB = int(os.getenv("MAX_DOWNLOAD_MB", 1024))
 DIRECT_LIMIT_MB = 45
 MONGO_URI = os.getenv("MONGO_URI")
 
-# Queue concurrency (how many downloads at once)
 MAX_CONCURRENT = 2
 
 logging.basicConfig(level=logging.INFO)
@@ -207,7 +206,6 @@ async def process_message(
             await log_request(user_id, link, False, "Message not found")
             return
 
-        # Text only
         if message.text and not message.media:
             await progress_msg.delete()
             sent = await update.message.reply_text(message.text)
@@ -216,7 +214,6 @@ async def process_message(
             await log_request(user_id, link, True)
             return
 
-        # Media
         if message.media:
             file_size = message.file.size if message.file else None
             if file_size:
@@ -227,7 +224,6 @@ async def process_message(
                     return
 
                 if size_mb > DIRECT_LIMIT_MB:
-                    # Upload to gofile.io
                     await progress_msg.edit_text(f"📥 Downloading {size_mb:.1f} MB...")
                     last_percent = -1
                     async def dl_progress(current, total):
@@ -240,7 +236,6 @@ async def process_message(
                     file_path = await client.download_media(message, progress_callback=dl_progress)
                     await progress_msg.edit_text("📤 Uploading to cloud (gofile.io)...")
 
-                    # gofile.io upload
                     try:
                         resp = requests.get('https://api.gofile.io/servers', timeout=10)
                         if resp.status_code != 200:
@@ -282,7 +277,6 @@ async def process_message(
                         asyncio.create_task(delete_file_after(file_path, 60))
                         return
                 else:
-                    # Direct send via Telegram (≤45 MB)
                     await progress_msg.edit_text(f"📥 Downloading {size_mb:.1f} MB...")
                     last_percent = -1
                     async def dl_progress(current, total):
@@ -310,7 +304,6 @@ async def process_message(
                     await log_request(user_id, link, True)
                     return
             else:
-                # No file size info – download and send directly
                 file_path = await client.download_media(message)
                 await progress_msg.edit_text("📤 Uploading...")
                 with open(file_path, "rb") as f:
@@ -469,137 +462,8 @@ def admin_only(func):
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_users = await users_col.count_documents({})
-    banned = await users_col.count_documents({"is_banned": True})
-    total_req = await requests_col.count_documents({})
-    today = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-    today_req = await requests_col.count_documents({"timestamp": {"$gte": today}})
-    cooldown = await get_cooldown()
-    auto_del = await get_auto_delete()
-    msg = (
-        f"📊 **Stats**\n"
-        f"Users: {total_users}\nBanned: {banned}\n"
-        f"Total requests: {total_req}\nToday: {today_req}\n"
-        f"Cooldown: {cooldown}s\nAuto‑delete: {auto_del}s"
-    )
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-@admin_only
-async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    page = 0
-    if context.args:
-        try:
-            page = int(context.args[0]) - 1
-        except: pass
-    limit = 10
-    cursor = users_col.find().sort("joined_at", -1).skip(page * limit).limit(limit)
-    users = await cursor.to_list(length=limit)
-    if not users:
-        await update.message.reply_text("No users.")
-        return
-    text = "**Users (latest):**\n"
-    for u in users:
-        text += f"• `{u['user_id']}` - @{u.get('username', 'N/A')} - {u.get('request_count',0)} reqs\n"
-    text += f"\nPage {page+1}. Use `/users {page+2}` for next."
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-@admin_only
-async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /user <id>")
-        return
-    try:
-        uid = int(context.args[0])
-    except:
-        await update.message.reply_text("Invalid ID.")
-        return
-    user = await users_col.find_one({"user_id": uid})
-    if not user:
-        await update.message.reply_text("Not found.")
-        return
-    info = f"👤 **User {uid}**\nUsername: @{user.get('username','N/A')}\nRequests: {user.get('request_count',0)}\nBanned: {user.get('is_banned',False)}"
-    await update.message.reply_text(info, parse_mode="Markdown")
-
-@admin_only
-async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /ban <id>")
-        return
-    try:
-        uid = int(context.args[0])
-    except:
-        await update.message.reply_text("Invalid ID.")
-        return
-    await users_col.update_one({"user_id": uid}, {"$set": {"is_banned": True}})
-    await update.message.reply_text(f"✅ Banned {uid}.")
-
-@admin_only
-async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /unban <id>")
-        return
-    try:
-        uid = int(context.args[0])
-    except:
-        await update.message.reply_text("Invalid ID.")
-        return
-    await users_col.update_one({"user_id": uid}, {"$set": {"is_banned": False}})
-    await update.message.reply_text(f"✅ Unbanned {uid}.")
-
-@admin_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.reply_to_message:
-        msg = update.message.reply_to_message
-        await update.message.reply_text("📢 Broadcasting...")
-        count = 0
-        async for user in users_col.find({"is_banned": False}):
-            try:
-                await msg.copy(user["user_id"])
-                count += 1
-                await asyncio.sleep(0.05)
-            except: pass
-        await update.message.reply_text(f"✅ Sent to {count} users.")
-    else:
-        if not context.args:
-            await update.message.reply_text("Reply to a message with /broadcast or provide text.")
-            return
-        text = " ".join(context.args)
-        await update.message.reply_text("📢 Broadcasting...")
-        count = 0
-        async for user in users_col.find({"is_banned": False}):
-            try:
-                await context.bot.send_message(user["user_id"], text)
-                count += 1
-                await asyncio.sleep(0.05)
-            except: pass
-        await update.message.reply_text(f"✅ Sent to {count} users.")
-
-@admin_only
-async def set_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /setcooldown <seconds>")
-        return
-    try:
-        sec = int(context.args[0])
-        if sec < 1: raise ValueError
-        await set_config("cooldown", sec)
-        await update.message.reply_text(f"✅ Cooldown set to {sec}s.")
-    except:
-        await update.message.reply_text("Invalid number.")
-
-@admin_only
-async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.args:
-        await update.message.reply_text("Usage: /setautodelete <seconds>")
-        return
-    try:
-        sec = int(context.args[0])
-        if sec < 1: raise ValueError
-        await set_config("auto_delete", sec)
-        await update.message.reply_text(f"✅ Auto‑delete set to {sec}s.")
-    except:
-        await update.message.reply_text("Invalid number.")
-
-# ===== Inline Cancel Button Handler =====
+    banned = await users_col.
+    # ===== Inline Cancel Button Handler =====
 async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -718,40 +582,21 @@ async def kill_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🗑️ Your request has been removed from the queue.")
     else:
         await update.message.reply_text("ℹ️ No active or queued request found.")
-        
-# ===== Graceful shutdown handler =====
-async def shutdown(sig, loop):
-    logger.info(f"Received exit signal {sig.name}, shutting down...")
-    # Cancel all active tasks
-    tasks = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
-    for task in tasks:
-        task.cancel()
-    await asyncio.gather(*tasks, return_exceptions=True)
-    # Stop the event loop
-    loop.stop()
+        # ===== Post-init function to start worker =====
+async def post_init(application: Application):
+    """Start the worker task after the application is initialized."""
+    asyncio.create_task(worker())
 
 # ===== Main function =====
 def main():
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
-    # Set up signal handlers for graceful shutdown
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, lambda: asyncio.create_task(shutdown(sig, loop)))
-
-    # Start the worker
-    asyncio.create_task(worker())
-
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # User commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("myinfo", myinfo))
     app.add_handler(CommandHandler("logout", logout))
     app.add_handler(CommandHandler("cancel", kill_request))
 
-    # Login conversation
     conv = ConversationHandler(
         entry_points=[CommandHandler("login", login_start)],
         states={
@@ -763,7 +608,6 @@ def main():
     )
     app.add_handler(conv)
 
-    # Admin commands
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("users", users_list))
     app.add_handler(CommandHandler("user", user_details))
@@ -773,13 +617,10 @@ def main():
     app.add_handler(CommandHandler("setcooldown", set_cooldown))
     app.add_handler(CommandHandler("setautodelete", set_autodelete))
 
-    # Inline callback handler
     app.add_handler(CallbackQueryHandler(cancel_callback, pattern="^cancel_"))
 
-    # Link handler
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
-    # Run webhook or polling
     webhook_url = os.getenv("WEBHOOK_URL")
     if webhook_url:
         port = int(os.environ.get("PORT", 8080))
