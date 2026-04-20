@@ -718,7 +718,7 @@ async def kill_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🗑️ Your request has been removed from the queue.")
     else:
         await update.message.reply_text("ℹ️ No active or queued request found.")
-```
+        
 # ===== Graceful shutdown handler =====
 async def shutdown(sig, loop):
     logger.info(f"Received exit signal {sig.name}, shutting down...")
