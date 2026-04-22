@@ -35,6 +35,11 @@ MAX_DOWNLOAD_MB = int(os.getenv("MAX_DOWNLOAD_MB", 1024))
 DIRECT_LIMIT_MB = 45
 MONGO_URI = os.getenv("MONGO_URI")
 
+# Webhook mode is required
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+if not WEBHOOK_URL:
+    raise RuntimeError("WEBHOOK_URL environment variable is required for webhook mode.")
+
 MAX_CONCURRENT = 2
 
 logging.basicConfig(level=logging.INFO)
@@ -649,7 +654,7 @@ async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Invalid number.")
 
-# ===== Inline Cancel Button Handler =====
+        # ===== Inline Cancel Button Handler =====
 async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -808,17 +813,14 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
 
-    webhook_url = os.getenv("WEBHOOK_URL")
-    if webhook_url:
-        port = int(os.environ.get("PORT", 8080))
-        app.run_webhook(
-            listen="0.0.0.0",
-            port=port,
-            webhook_url=f"{webhook_url}/{BOT_TOKEN}",
-            url_path=BOT_TOKEN
-        )
-    else:
-        app.run_polling()
+    # Webhook mode (required)
+    port = int(os.environ.get("PORT", 8080))
+    app.run_webhook(
+        listen="0.0.0.0",
+        port=port,
+        webhook_url=f"{WEBHOOK_URL}/{BOT_TOKEN}",
+        url_path=BOT_TOKEN
+    )
 
 if __name__ == "__main__":
     main()
