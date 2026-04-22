@@ -76,13 +76,13 @@ semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
 # ===== Helper functions (with fallback if MongoDB missing) =====
 async def get_config(key: str, default: int) -> int:
-    if not config_col:
+    if config_col is None:
         return default
     doc = await config_col.find_one({"_id": key})
     return doc["value"] if doc else default
 
 async def set_config(key: str, value: int):
-    if not config_col:
+    if config_col is None:
         return
     await config_col.update_one({"_id": key}, {"$set": {"value": value}}, upsert=True)
 
@@ -93,7 +93,7 @@ async def get_auto_delete() -> int:
     return await get_config("auto_delete", DEFAULT_AUTO_DELETE)
 
 async def update_user(user: dict):
-    if not users_col:
+    if users_col is None:
         return
     user_id = user["id"]
     now = datetime.now(timezone.utc)
@@ -113,13 +113,13 @@ async def update_user(user: dict):
     )
 
 async def is_banned(user_id: int) -> bool:
-    if not users_col:
+    if users_col is None:
         return False
     user = await users_col.find_one({"user_id": user_id})
     return user.get("is_banned", False) if user else False
 
 async def log_request(user_id: int, link: str, success: bool, error: str = None):
-    if not requests_col:
+    if requests_col is None:
         return
     await requests_col.insert_one({
         "user_id": user_id,
@@ -130,13 +130,13 @@ async def log_request(user_id: int, link: str, success: bool, error: str = None)
     })
 
 async def get_user_session(user_id: int) -> Optional[str]:
-    if not sessions_col:
+    if sessions_col is None:
         return None
     doc = await sessions_col.find_one({"user_id": user_id})
     return doc["session_string"] if doc else None
 
 async def save_user_session(user_id: int, session_string: str):
-    if not sessions_col:
+    if sessions_col is None:
         return
     await sessions_col.update_one(
         {"user_id": user_id},
@@ -145,7 +145,7 @@ async def save_user_session(user_id: int, session_string: str):
     )
 
 async def delete_user_session(user_id: int):
-    if not sessions_col:
+    if sessions_col is None:
         return
     await sessions_col.delete_one({"user_id": user_id})
 
@@ -228,7 +228,6 @@ async def worker():
                     queue_order.remove(user_id)
                 update_positions()
                 task_queue.task_done()
-
 # ===== Background task that does the actual fetching and uploading =====
 async def process_message(
     update: Update, context: ContextTypes.DEFAULT_TYPE,
@@ -398,7 +397,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def myinfo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available. Cannot fetch info.")
         return
     user = await users_col.find_one({"user_id": user_id})
@@ -499,7 +498,7 @@ def admin_only(func):
 
 @admin_only
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     total_users = await users_col.count_documents({})
@@ -519,7 +518,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     page = 0
@@ -541,7 +540,7 @@ async def users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if not context.args:
@@ -561,7 +560,7 @@ async def user_details(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if not context.args:
@@ -577,7 +576,7 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if not context.args:
@@ -593,7 +592,7 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not users_col:
+    if users_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if update.message.reply_to_message:
@@ -624,7 +623,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def set_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not config_col:
+    if config_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if not context.args:
@@ -640,7 +639,7 @@ async def set_cooldown(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @admin_only
 async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not config_col:
+    if config_col is None:
         await update.message.reply_text("ℹ️ Database not available.")
         return
     if not context.args:
@@ -654,7 +653,7 @@ async def set_autodelete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Invalid number.")
 
-        # ===== Inline Cancel Button Handler =====
+# ===== Inline Cancel Button Handler =====
 async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
