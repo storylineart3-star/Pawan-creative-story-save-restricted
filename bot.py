@@ -44,7 +44,7 @@ WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 if not WEBHOOK_URL:
     raise RuntimeError("WEBHOOK_URL environment variable is required for webhook mode.")
 
-MAX_CONCURRENT = 2
+MAX_CONCURRENT = 1
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
